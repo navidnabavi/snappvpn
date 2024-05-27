@@ -33,7 +33,7 @@ To use EasyForti, you need to provide the path to your Fortinet VPN configuratio
 ### Command-Line Arguments
 
 - `--config-path` or `-c`: Path to the Fortinet VPN configuration file (required).
-- `--secret-file` or `-s`: Path to the secret file containing authentication details (required) (read QR Code Script).
+- `--secret-file` or `-s`: Path to the secret file containing authentication details (required) (read QR Code Script). It's a text file contains the secret data comes from qrcode, you can also get it from Google Authenticator.
 - `--probe-url` or `-p`: URL to probe for checking VPN liveness (optional, defaults to `http://gitlab.snapp.ir`).
 
 ### Example Command

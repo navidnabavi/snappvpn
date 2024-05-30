@@ -5,7 +5,7 @@ import time
 from itertools import chain
 from subprocess import DEVNULL, PIPE, Popen, TimeoutExpired, call
 from threading import Event, Thread
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, TextIO, Tuple
 
 try:
     import pyotp
@@ -20,32 +20,72 @@ exit_event = Event()
 connected_event = Event()
 
 
-def read_secret(path):
+def read_secret(path: str) -> str:
+    """
+    Reads TOTP secret from a text file
+
+    Args:
+        path (str): path to secret file
+
+    Returns:
+        str: TOTP secret in string
+    """
+
     with open(path) as f:
         return f.read()
 
 
-def write_to_process(stdin, text):
+def write_to_process(stdin, text: str):
     stdin.write(f"{text}\n")
     stdin.flush()  # Flush the buffer to ensure data is sent
     stdin.close()
 
 
-def resolve_hostname_to_ip(hostname):
+def resolve_hostname_to_ip(hostname: str) -> str:
+    """
+    Resolves dns name of a FQDN
+
+    Args:
+        hostname (str): a domain name
+
+    Returns:
+        str: IP Address
+    """
+
     ip_address = socket.gethostbyname(hostname)
     return ip_address
 
 
-def clear_route_table(server_name):
+def clear_route_table(server_name: str):
+    """
+    Clears routes added by OpenFortinet.
+    This happens when OpenFortinet not exits gracefully
+    or system got in to standby
+
+    Args:
+        server_name (str): FQDN of the VPN server
+    """
+
     address = resolve_hostname_to_ip(server_name)
-    address_history = get_server_ips_history()
+    address_history = get_routes_ips_history()
 
     print("try removing stalled routes.")
     for addr in chain(address_history, [server_name, address]):
         call(["sudo", "route", "delete", addr], stdout=DEVNULL, stderr=DEVNULL)
 
 
-def wait_for_connection(stdout) -> Tuple[bool, List[str]]:
+def wait_for_connection(stdout: TextIO) -> Tuple[bool, List[str]]:
+    """
+    Waits for a successful connection based on the output from a process.
+
+    Args:
+        stdout (TextIO): The subprocess stream representing the process output.
+
+    Returns:
+        Tuple[bool, List[str]]: A tuple containing:
+            - A boolean indicating whether the connection was successful.
+            - A list of routes added during the process.
+    """
     routes = []
     CONNECTION_ERRORS_MSGS = [
         "getaddrinfo: nodename nor servname provided, or not known",
@@ -69,7 +109,17 @@ def wait_for_connection(stdout) -> Tuple[bool, List[str]]:
     return False, None
 
 
-def prob_http(probe_addr):
+def prob_http(probe_addr: str) -> bool:
+    """
+    Checks if an HTTP probe to the given address is successful.
+
+    Args:
+        probe_addr (str): The address to probe.
+
+    Returns:
+        bool: True if the probe is successful, False otherwise.
+    """
+
     try:
         requests.head(probe_addr, timeout=5)
     except requests.ConnectTimeout:
@@ -83,7 +133,13 @@ def prob_http(probe_addr):
     return True
 
 
-def prober(url):
+def prober(url: str) -> None:
+    """
+    Continuously probes an HTTP URL for connectivity.
+
+    Args:
+        url (str): The URL to probe.
+    """
     c = 0
     while not exit_event.is_set():
         if connected_event.is_set() and not probe_failure_event.is_set():
@@ -103,14 +159,15 @@ def app_run(config_address, secret):
     print("Exiting...")
 
 
-def get_route_ips(stdout):
-    for line in stdout:
-        matches = re.match(r"add (host|net) ([\d\w\.]+): gateway", line)
-        if matches:
-            yield matches.groups()[1]
+def run_openfortivpn(config_address: str, secret_key: str) -> None:
+    """
+    Runs OpenFortinet process
 
+    Args:
+        config_address (str): configuration address for OpenFortinet
+        secret_key (str): TOTP secret in string
 
-def run_openfortivpn(config_address, secret_key):
+    """
     # Start the program as a subprocess
     probe_failure_event.clear()
     print("Starting...")
@@ -122,6 +179,7 @@ def run_openfortivpn(config_address, secret_key):
         bufsize=0,
         universal_newlines=True,
     )  # For handling text mode
+
     otp_code = generate_otp(secret_key)
     print("Providing OTP Code")
     write_to_process(process.stdin, otp_code)
@@ -157,17 +215,29 @@ def run_openfortivpn(config_address, secret_key):
             return True
 
 
-def generate_otp(secret_key):
-    # Create a TOTP object with the secret key
-    totp = pyotp.TOTP(secret_key)
+def generate_otp(secret_key: str) -> str:
+    """
+    Generates TOTP based on given secret
 
-    # Generate the OTP code
+    Args:
+        secret_key (str): TOTP secret
+
+    Returns:
+        str: Time based OTP
+    """
+    totp = pyotp.TOTP(secret_key)
     otp_code = totp.now()
 
     return otp_code
 
 
-def get_args():
+def get_args() -> argparse.Namespace:
+    """
+    Parses commandline arguments and prints help
+
+    Returns:
+        argparse.Namespace: parsed arguments
+    """
     parser = argparse.ArgumentParser(
         prog="easyforti",
         description="Parse config path, probe URL, and secret file path from arguments",
@@ -188,6 +258,16 @@ def get_args():
 
 
 def get_server_name(file_path: str) -> str:
+    """
+    Retrieves the server name from the OpenFortinet configuration file.
+
+    Args:
+        file_path (str): The path to the configuration file.
+
+    Returns:
+        str: The server name extracted from the configuration file.
+    """
+
     with open(file_path) as f:
         for line in f.readlines():
             m = re.search(r"host\s*=\s*([\w\.]+)", line)
@@ -195,7 +275,15 @@ def get_server_name(file_path: str) -> str:
                 return m.groups()[0]
 
 
-def get_server_ips_history():
+def get_routes_ips_history() -> List[str]:
+    """
+    Retrieves a list of routes IP addresses from a file.
+    It will be used to clear up route table.
+
+    Returns:
+        List[str]: A list of server IP addresses, or an empty list if the file is not found.
+    """
+
     try:
         with open("/tmp/snapvpn-ips", mode="r") as tmp_file:
             return tmp_file.read().splitlines()
@@ -203,12 +291,20 @@ def get_server_ips_history():
         return []
 
 
-def write_route_ips_to_file(addresses: Iterable[str]) -> Iterable[str]:
+def write_route_ips_to_file(addresses: Iterable[str]) -> None:
+    """
+    Writes a list of IP addresses to a file.
+    The file be used to clear route table.
+
+    Args:
+        addresses (Iterable[str]): An iterable containing IP addresses to be written.
+
+    Returns:
+        None
+    """
     with open("/tmp/snapvpn-ips", mode="w") as tmp_file:
         for addr in addresses:
             tmp_file.write(f"{addr}\n")
-
-    return addresses
 
 
 def main():

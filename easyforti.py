@@ -1,8 +1,11 @@
 import argparse
-import time
-from subprocess import PIPE, Popen, TimeoutExpired, call
-from threading import Event, Thread
 import re
+import socket
+import time
+from itertools import chain
+from subprocess import DEVNULL, PIPE, Popen, TimeoutExpired, call
+from threading import Event, Thread
+from typing import Iterable, List, Tuple
 
 try:
     import pyotp
@@ -28,23 +31,42 @@ def write_to_process(stdin, text):
     stdin.close()
 
 
+def resolve_hostname_to_ip(hostname):
+    ip_address = socket.gethostbyname(hostname)
+    return ip_address
+
+
 def clear_route_table(server_name):
+    address = resolve_hostname_to_ip(server_name)
+    address_history = get_server_ips_history()
+
     print("try removing stalled routes.")
-    call(["sudo", "route", "delete", server_name])
+    for addr in chain(address_history, [server_name, address]):
+        call(["sudo", "route", "delete", addr], stdout=DEVNULL, stderr=DEVNULL)
 
 
-def wait_for_connection(stdout):
+def wait_for_connection(stdout) -> Tuple[bool, List[str]]:
+    routes = []
+    CONNECTION_ERRORS_MSGS = [
+        "getaddrinfo: nodename nor servname provided, or not known",
+        "connect: Connection refused",
+        "Connection terminated.",
+    ]
     for line in stdout:
         print(line, end="")
-        if "getaddrinfo: nodename nor servname provided, or not known" in line:
-            return False
-        if "connect: Connection refused" in line:
-            return False
-        if "Connection terminated." in line:
-            return False
+
+        # adding routes
+        match = re.match(r"add (host|net) ([\d\w\.]+): gateway", line)
+        if match:
+            routes.append(match.groups()[1])
+
         if "INFO:   Tunnel is up and running." in line:
-            return True
-    return False
+            return True, routes
+        for msg in CONNECTION_ERRORS_MSGS:
+            if msg in line:
+                break
+
+    return False, None
 
 
 def prob_http(probe_addr):
@@ -81,6 +103,13 @@ def app_run(config_address, secret):
     print("Exiting...")
 
 
+def get_route_ips(stdout):
+    for line in stdout:
+        matches = re.match(r"add (host|net) ([\d\w\.]+): gateway", line)
+        if matches:
+            yield matches.groups()[1]
+
+
 def run_openfortivpn(config_address, secret_key):
     # Start the program as a subprocess
     probe_failure_event.clear()
@@ -97,9 +126,12 @@ def run_openfortivpn(config_address, secret_key):
     print("Providing OTP Code")
     write_to_process(process.stdin, otp_code)
 
-    if not wait_for_connection(process.stdout):
+    connected, routes = wait_for_connection(process.stdout)
+    if not connected:
         time.sleep(5)
         return True
+
+    write_route_ips_to_file(routes)
 
     print("VPN is running")
     time.sleep(2)
@@ -163,6 +195,22 @@ def get_server_name(file_path: str) -> str:
                 return m.groups()[0]
 
 
+def get_server_ips_history():
+    try:
+        with open("/tmp/snapvpn-ips", mode="r") as tmp_file:
+            return tmp_file.read().splitlines()
+    except FileNotFoundError:
+        return []
+
+
+def write_route_ips_to_file(addresses: Iterable[str]) -> Iterable[str]:
+    with open("/tmp/snapvpn-ips", mode="w") as tmp_file:
+        for addr in addresses:
+            tmp_file.write(f"{addr}\n")
+
+    return addresses
+
+
 def main():
     args = get_args()
     config_path = args.config_path
@@ -185,6 +233,7 @@ def main():
         exit_event.set()
 
     app_thread.join()
+    clear_route_table(server_name)
     probe_thread.join()
 
 
